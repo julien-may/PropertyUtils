@@ -13,8 +13,6 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -244,17 +242,6 @@ public class PropertyUtils {
 			return hashCode;
 		}
 
-		@SuppressWarnings("unchecked")
-		public <T> T invokeOn(Object object) {
-			return (T)invokeOn(lastInvocation, object);
-		}
-
-		private Object invokeOn(Invocation invocation, Object value) {
-			if (invocation == null) return value;
-			if (invocation.previousInvocation != null) value = invokeOn(invocation.previousInvocation, value);
-			return invocation.invokeOn(value);
-		}
-
 		@Override
 		public String toString() {
 			StringBuilder sb = new StringBuilder(100);
@@ -293,15 +280,6 @@ public class PropertyUtils {
 			}
 		}
 
-		private Object[] getConcreteArgs() {
-			if (weakArgs == null) return new Object[0];
-			Object[] args = new Object[weakArgs.length];
-			for (int i = 0; i < weakArgs.length; i++) {
-				args[i] = weakArgs[i].get();
-			}
-			return args;
-		}
-
 		Class<?> getInvokedClass() {
 			return invokedClass;
 		}
@@ -317,15 +295,6 @@ public class PropertyUtils {
 		String getInvokedPropertyName() {
 			if (invokedPropertyName == null) invokedPropertyName = IntrospectionUtil.getPropertyName(invokedMethod);
 			return invokedPropertyName;
-		}
-
-		Object invokeOn(Object object) {
-			try {
-				return object == null ? null : invokedMethod.invoke(object, getConcreteArgs());
-			} catch (Exception e) {
-				//throw new InvocationException(e, invokedMethod, object);
-				throw new RuntimeException();
-			}
 		}
 
 		/**
@@ -505,16 +474,13 @@ public class PropertyUtils {
 		 */
 		public static <T> T createProxy(InvocationInterceptor interceptor, Class<T> clazz, boolean failSafe, Class<?> ... implementedInterface) {
 			if (clazz.isInterface()) return (T)createNativeJavaProxy(clazz.getClassLoader(), interceptor, concatClasses(new Class<?>[] { clazz }, implementedInterface));
-			final ProxyIterator proxyIterator = (interceptor instanceof ProxyIterator) ? (ProxyIterator)interceptor : null;
+
 			try {
-				if (proxyIterator != null) proxyIterator.enabled = false;
 				return (T)createEnhancer(interceptor, clazz, implementedInterface).create();
 			} catch (IllegalArgumentException iae) {
 				if (Proxy.isProxyClass(clazz)) return (T)createNativeJavaProxy(clazz.getClassLoader(), interceptor, concatClasses(implementedInterface, clazz.getInterfaces()));
 				if (isProxable(clazz)) return ClassImposterizer.INSTANCE.imposterise(interceptor, clazz, implementedInterface);
 				return manageUnproxableClass(clazz, failSafe);
-			} finally {
-				if (proxyIterator != null) proxyIterator.enabled = true;
 			}
 		}
 
@@ -522,26 +488,6 @@ public class PropertyUtils {
 			if (failSafe) return null;
 //			throw new UnproxableClassException(clazz);
 			throw new RuntimeException();
-		}
-
-		// ////////////////////////////////////////////////////////////////////////
-		// /// Iterable Proxy
-		// ////////////////////////////////////////////////////////////////////////
-
-		/**
-		 * Creates a proxy of the given class that also decorates it with Iterable interface
-		 * @param interceptor The object that will intercept all the invocations to the returned proxy
-		 * @param clazz The class to be proxied
-		 * @return The newly created proxy
-		 */
-		public static <T> T createIterableProxy(InvocationInterceptor interceptor, Class<T> clazz) {
-			if (clazz.isPrimitive()) return null;
-			return createProxy(interceptor, normalizeProxiedClass(clazz), false, Iterable.class);
-		}
-
-		private static <T> Class<T> normalizeProxiedClass(Class<T> clazz) {
-			if (clazz == String.class) return (Class<T>)CharSequence.class;
-			return clazz;
 		}
 
 		// ////////////////////////////////////////////////////////////////////////
@@ -570,81 +516,6 @@ public class PropertyUtils {
 		}
 	}
 
-
-	public static class ProxyIterator<T> extends InvocationInterceptor implements Iterable<T> {
-
-		private final ResettableIterator<? extends T> proxiedIterator;
-
-		/**
-		 * Set to true (default) the interceptor will work on the proxiedIterator, if set to false it will ignore any method invocations.
-		 */
-		protected boolean enabled = true;
-
-		/**
-		 * Creates a proxy that wraps the given Iterator in order to seamlessly iterate on them by exposing the API of a single object
-		 * @param proxiedIterator The Iterator to be proxied
-		 */
-		protected ProxyIterator(ResettableIterator<? extends T> proxiedIterator) {
-			this.proxiedIterator = proxiedIterator;
-		}
-
-		/**
-		 * {@inheritDoc}
-		 */
-		public Object invoke(Object obj, Method method, Object[] args) throws InvocationTargetException, IllegalAccessException {
-			if (method.getName().equals("iterator")) return iterator();
-			if (enabled) return createProxyIterator(iterateOnValues(method, args), (Class<Object>)method.getReturnType());
-			return null;
-		}
-
-		/**
-		 * Invokes the given method with the given arguments on all the object in the iterator wrapped by this proxy
-		 * @param method The method to be invoked
-		 * @param args The arguments used to invoke the given method
-		 * @return An Iterator over the results on all the invoctions of the given method
-		 * @throws InvocationTargetException
-		 * @throws IllegalAccessException
-		 */
-		protected ResettableIterator<Object> iterateOnValues(Method method, Object[] args) throws InvocationTargetException, IllegalAccessException {
-			if (method.getName().equals("finalize")) return null;
-			method.setAccessible(true);
-			proxiedIterator.reset();
-			List<Object> list = new LinkedList<Object>();
-			while (proxiedIterator.hasNext()) { list.add(method.invoke(proxiedIterator.next(), args)); }
-			return new ResettableIteratorOnIterable(list);
-		}
-
-		/**
-		 * Creates a ProxyIterator of the given class that wraps the given Iterator
-		 * @param proxiedIterator The Iterator to be proxied
-		 * @param clazz The class dinamically implemented by the newly created proxy
-		 * @return The newly created proxy
-		 */
-		public static <T> T createProxyIterator(ResettableIterator<? extends T> proxiedIterator, Class<T> clazz) {
-			return ProxyUtil.createIterableProxy(new ProxyIterator<T>(proxiedIterator), clazz);
-		}
-
-		/**
-		 * Creates a ProxyIterator of the same class of the given item that wraps the given Iterator
-		 * @param proxiedIterator The Iterator to be proxied
-		 * @param firstItem An instance of the class dinamically implemented by the newly created proxy
-		 * @return The newly created proxy
-		 */
-		public static <T> T createProxyIterator(ResettableIterator<? extends T> proxiedIterator, T firstItem) {
-			T proxy = createProxyIterator(proxiedIterator, (Class<T>)firstItem.getClass());
-			proxiedIterator.reset();
-			return proxy;
-		}
-
-		/**
-		 * {@inheritDoc}
-		 */
-		@SuppressWarnings("unchecked")
-		public Iterator<T> iterator() {
-			return (Iterator<T>)proxiedIterator;
-		}
-	}
-
 	final static class ClassImposterizer  {
 
 		static final ClassImposterizer INSTANCE = new ClassImposterizer();
@@ -657,7 +528,7 @@ public class PropertyUtils {
 			/**
 			 * {@inheritDoc}
 			 */
-//			@Override
+			@Override
 			protected String getTag() {
 				return "ByLambdajWithCGLIB";
 			}
@@ -675,7 +546,7 @@ public class PropertyUtils {
 			/**
 			 * {@inheritDoc}
 			 */
-//			@Override
+			@Override
 			protected String getTag() {
 				return "ByLambdajWithCGLIB";
 			}
@@ -752,31 +623,6 @@ public class PropertyUtils {
 		}
 
 		/**
-		 * Evaluates this Argument on the given object
-		 * @param object The Object on which this Argument should be evaluated. It must be compatible with the Argument's root class.
-		 * @return The value of this Argument for the given Object
-		 */
-		@SuppressWarnings("unchecked")
-		public T evaluate(Object object) {
-			return (T)invocationSequence.invokeOn(object);
-		}
-
-		/**
-		 * Returns the root class from which the sequence of method invocation defined by this argument starts
-		 */
-		public Class<?> getRootArgumentClass() {
-			return invocationSequence.getRootInvokedClass();
-		}
-
-		/**
-		 * Returns the type returned by the last method of the invocations sequence represented by this Argument.
-		 */
-		@SuppressWarnings("unchecked")
-		public Class<T> getReturnType() {
-			return (Class<T>)invocationSequence.getReturnType();
-		}
-
-		/**
 		 * {@inheritDoc}
 		 */
 		@Override
@@ -815,205 +661,6 @@ public class PropertyUtils {
 			if ((methodName.startsWith("get") || methodName.startsWith("set")) && methodName.length() > 3) methodName = methodName.substring(3);
 			else if (methodName.startsWith("is") && methodName.length() > 2) methodName = methodName.substring(2);
 			return methodName.substring(0, 1).toLowerCase(Locale.getDefault()) + methodName.substring(1);
-		}
-
-		/**
-		 * Return the value of named property on the given bean
-		 * @param bean The bean to be introspected
-		 * @param propertyName The name of the property to be introspected
-		 * @return The value of named property on the given bean
-		 */
-		public static Object getPropertyValue(Object bean, String propertyName) {
-			if (bean == null) return null;
-			int dotPos = propertyName.indexOf('.');
-			if (dotPos > 0) return getPropertyValue(getPropertyValue(bean, propertyName.substring(0, dotPos)), propertyName.substring(dotPos + 1));
-
-			String accessorName = propertyName.substring(0, 1).toUpperCase(Locale.getDefault()) + propertyName.substring(1);
-			try {
-				return bean.getClass().getMethod("get" + accessorName).invoke(bean, (Object[]) null);
-			} catch (Exception e) {
-				return getBooleanPropertyValue(bean, propertyName, accessorName);
-			}
-		}
-
-		private static Object getBooleanPropertyValue(Object bean, String propertyName, String accessorName) {
-			try {
-				return bean.getClass().getMethod("is" + accessorName).invoke(bean, (Object[]) null);
-			} catch (Exception e) {
-				return getPlainPropertyValue(bean, propertyName);
-			}
-		}
-
-		private static Object getPlainPropertyValue(Object bean, String propertyName) {
-			try {
-				return bean.getClass().getMethod(propertyName).invoke(bean, (Object[]) null);
-			} catch (Exception e) {
-				throw new RuntimeException();
-//				throw new IntrospectionException(e);
-			}
-		}
-
-		/**
-		 * Finds the consructor of the given class that matches the given arguments
-		 * @param clazz The class for which a constructor should be found
-		 * @param args The arguments that have to be assignable to the parameters of the constructor to be found
-		 * @return The consructor of the given class that matches the given arguments
-		 */
-		public static <T> Constructor<T> findConstructor(Class<T> clazz, Object... args) {
-			return findConstructor(clazz, objectsToClasses(args));
-		}
-
-		/**
-		 * Finds the consructor of the given class having arguments of the given types
-		 * @param clazz The class for which a constructor should be found
-		 * @param parameterTypes The types of the parameters of the constructor to be found
-		 * @return The consructor of the given class having arguments of the given types
-		 */
-		public static <T> Constructor<T> findConstructor(Class<T> clazz, Class<?>... parameterTypes) {
-			try {
-				return clazz.getConstructor(parameterTypes);
-			} catch (NoSuchMethodException e) {
-				Constructor<T> constructor = discoverConstructor(clazz, parameterTypes);
-				if (constructor == null) {
-					throw new RuntimeException();
-//					throw new IntrospectionException(e);
-				}
-				return constructor;
-			}
-		}
-
-		private static <T> Constructor<T> discoverConstructor(Class<?> clazz, Class<?>... parameterTypes) {
-			for (Constructor<?> c : clazz.getConstructors()) {
-				if (areCompatible(c.getParameterTypes(), parameterTypes)) return (Constructor<T>)c;
-			}
-			return null;
-		}
-
-
-		/**
-		 * Finds a method of the given class with the given name that matches the given arguments
-		 * @param clazz The class containing the method should be found
-		 * @param args The arguments that have to be assignable to the parameters of the method to be found
-		 * @return The method of the given class with the given name that matches the given arguments
-		 */
-		public static Method findMethod(Class<?> clazz, String methodName, Object... args) {
-			return findMethod(clazz, methodName, objectsToClasses(args));
-		}
-
-		/**
-		 * Finds a method of the given class with the given name having arguments of the given types
-		 * @param clazz The class containing the method should be found
-		 * @param parameterTypes The types of the parameters of the method to be found
-		 * @return The method of the given class with the given name having arguments of the given types
-		 */
-		public static Method findMethod(Class<?> clazz, String methodName, Class<?>... parameterTypes) {
-			try {
-				return clazz.getMethod(methodName,  parameterTypes);
-			} catch (NoSuchMethodException e) {
-				Method method = discoverMethod(clazz, methodName, parameterTypes);
-				if (method == null) {
-					throw new RuntimeException();
-//					throw new IntrospectionException(e);
-				}
-				return method;
-			}
-		}
-
-		private static Method discoverMethod(Class<?> clazz, String methodName, Class<?>... parameterTypes) {
-			for (Method m : clazz.getMethods()) {
-				if (m.getName().equals(methodName) && areCompatible(m.getParameterTypes(), parameterTypes)) return m;
-			}
-			return null;
-		}
-
-		private static boolean areCompatible(Class<?>[] methodParams, Class<?>[] actualParam) {
-			if (methodParams == null || methodParams.length != actualParam.length) return false;
-			for (int i = 0; i < methodParams.length; i++) {
-				if (!areCompatible(methodParams[i], actualParam[i])) return false;
-			}
-			return true;
-		}
-
-		private static boolean areCompatible(Class<?> methodParam, Class<?> actualParam) {
-			return methodParam.isAssignableFrom(actualParam) ||
-				(methodParam.isPrimitive() ? areBoxingCompatible(methodParam, actualParam) : areBoxingCompatible(actualParam, methodParam));
-		}
-
-		private static boolean areBoxingCompatible(Class<?> primitiveClass, Class<?> boxedClass) {
-			return boxedClass.getSimpleName().toLowerCase(Locale.getDefault()).startsWith(primitiveClass.getSimpleName());
-		}
-
-		private static Class<?>[] objectsToClasses(Object... args) {
-			Class<?>[] parameterTypes = new Class<?>[args == null ? 0 : args.length];
-			for (int i = 0; i < parameterTypes.length; i++) { parameterTypes[i] = args[i].getClass(); }
-			return parameterTypes;
-		}
-
-		/**
-		 * Returns a clone of the given original Object
-		 * @param original The Object to be cloned
-		 * @return A clone of the original object
-		 * @throws CloneNotSupportedException if the original object is not cloneable
-		 */
-		public static Object clone(Object original) throws CloneNotSupportedException {
-			if (!(original instanceof Cloneable)) throw new CloneNotSupportedException();
-			try {
-				return original.getClass().getMethod("clone").invoke(original);
-			} catch (Exception e) {
-				throw new CloneNotSupportedException();
-			}
-		}
-	}
-
-	public static abstract class ResettableIterator<T> implements Iterator<T> {
-
-		/**
-		 * Resets the cursor of this Iterator to its initial position
-		 */
-		public abstract void reset();
-
-		/**
-		 * {@inheritDoc}
-		 */
-		public void remove() {
-			throw new UnsupportedOperationException();
-		}
-	}
-
-	public static class ResettableIteratorOnIterable<T> extends ResettableIterator<T> {
-
-		private final Iterable<T> iterable;
-
-		private Iterator<T> iterator;
-
-		/**
-		 * Creates a ResettableIterator that wraps the given Iterable
-		 * @param iterable The Iterable to be wrapped
-		 */
-		public ResettableIteratorOnIterable(Iterable<T> iterable) {
-			this.iterable = iterable;
-			reset();
-		}
-
-		/**
-		 * {@inheritDoc}
-		 */
-		public final void reset() {
-			iterator = iterable.iterator();
-		}
-
-		/**
-		 * {@inheritDoc}
-		 */
-		public boolean hasNext() {
-			return iterator.hasNext();
-		}
-
-		/**
-		 * {@inheritDoc}
-		 */
-		public T next() {
-			return iterator.next();
 		}
 	}
 }
